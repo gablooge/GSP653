@@ -85,8 +85,9 @@ limitations under the License.
       drawingManager.addListener('rectanglecomplete', rectangle => rectangleQuery(rectangle.getBounds()));
 
       // circle search handler
-      drawingManager.addListener('circlecomplete', circle => {});
-
+      //drawingManager.addListener('circlecomplete', circle => {});
+      drawingManager.addListener('circlecomplete', circle => circleQuery(circle));
+      
     }
 
     // authorize
@@ -196,10 +197,25 @@ limitations under the License.
 
 
     // circleQuery
-
+    function circleQuery(circle){
+      let queryString = circleSQL(circle.getCenter(), circle.radius);
+      sendQuery(queryString);
+    }
 
     // circleSQL
-
+	function circleSQL(center, radius){
+        var queryString;
+        var centerLat = center.lat();
+        var centerLng = center.lng();
+        var kmPerDegree = 111.045;
+        queryString = 'SELECT pickup_latitude, pickup_longitude '
+        queryString += 'FROM `' + bigQueryProjectId +'.' + datasetId + '.' + tableName + '` ';
+        queryString += 'WHERE ST_DISTANCE(ST_GEOGPOINT(pickup_longitude,pickup_latitude),'
+        queryString += 'ST_GEOGPOINT('+ centerLng + ', ' + centerLat + ')) <'+ radius;
+        queryString +=' AND dropoff_latitude <> 0.0'
+        queryString +=' LIMIT ' + recordLimit;
+        return queryString;
+    }
 
 
 </script>
