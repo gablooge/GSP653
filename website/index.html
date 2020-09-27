@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<!--
+Copyright 2016 Google Inc.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+  <head>
+    <title>Simple Map</title>
+    <meta name="viewport" content="initial-scale=1.0">
+    <meta charset="utf-8">
+    <style>
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        height: 100%;
+      }
+    </style>
+    <script>
+
+    // general vars
+    let map;
+    let drawingManager;
+    let recordLimit = 10000;
+    let jobCheckTimer;
+    let heatmap;
+
+    // ClientID var
+    let scopes = 'https://www.googleapis.com/auth/bigquery';
+    let clientId = '553626065969-8fishoqdf496dgtmgvmqhn8tf79j6qpt.apps.googleusercontent.com';
+
+    // BigQuery vars
+    let gcpProjectId = 'qwiklabs-gcp-02-74ec22536e27';
+    let bigQueryProjectId = 'bigquery-public-data';
+    let datasetId = 'new_york';
+    let tableName = 'tlc_yellow_trips_2016';
+
+    // initMap
+    function initMap() {
+        map = new google.maps.Map(document.getElementById('map'), {
+            center: {lat: 40.744593, lng: -73.990370}, // Manhattan, New York.
+            zoom: 15
+        });
+        // call setupDrawingTools
+        setUpDrawingTools();
+    }
+
+
+    // setUpDrawingTools
+    function setUpDrawingTools(){
+      // Initialize drawing manager.
+      drawingManager = new google.maps.drawing.DrawingManager({
+        drawingMode: google.maps.drawing.OverlayType.CIRCLE,
+        drawingControl: true,
+        drawingControlOptions: {
+          position: google.maps.ControlPosition.TOP_LEFT,
+          drawingModes: [
+            google.maps.drawing.OverlayType.CIRCLE,
+            google.maps.drawing.OverlayType.RECTANGLE
+          ]
+        },
+        circleOptions: {
+          fillOpacity: 0
+        },
+        rectangleOptions: {
+          fillOpacity: 0
+        }
+      });
+      drawingManager.setMap(map);
+      // each one of these handlers do nothing currently, we will replace them later
+      // with working code
+
+      // rectangle search handler
+      //drawingManager.addListener('rectanglecomplete', rectangle => {});
+      drawingManager.addListener('rectanglecomplete', rectangle => rectangleQuery(rectangle.getBounds()));
+
+      // circle search handler
+      drawingManager.addListener('circlecomplete', circle => {});
+
+    }
+
+    // authorize
+    function authorize(event) {
+      gapi.auth.authorize({client_id: clientId, scope: scopes, immediate: false}, handleAuthResult);
+      return false;
+    }
+
+    // handleAuthResult
+    function handleAuthResult(authResult) {
+      if (authResult && !authResult.error) {
+        loadApi();
+        return;
+      }
+      console.error('Not authorized.')  
+    }
+
+    // loadApi
+    function loadApi(){
+      gapi.client.load('bigquery', 'v2').then(
+       () => initMap()
+      );
+    }
+
+    // sendQuery
+    function sendQuery(queryString){
+      let request = gapi.client.bigquery.jobs.query({
+          'query': queryString,
+          'timeoutMs': 30000,
+          'datasetId': datasetId,
+          'projectId': gcpProjectId,
+          'useLegacySql':false
+      });
+      request.execute(response => checkJobStatus(response.jobReference.jobId));
+    }
+
+    // checkJobStatus
+    function checkJobStatus(jobId){
+      let request = gapi.client.bigquery.jobs.get({
+        'projectId': gcpProjectId,
+        'jobId': jobId
+      });
+      request.execute(response => {
+        if (response.status.errorResult){
+          // Handle any errors.
+          console.log(response.status.error);
+          return;
+        }
+        if (response.status.state == 'DONE'){
+          // Get the results.
+          clearTimeout(jobCheckTimer);
+          getQueryResults(jobId);
+          return;
+        }
+        // Not finished, check again in a moment.
+        jobCheckTimer = setTimeout(checkJobStatus, 500, [jobId]);       
+      });
+    }
+
+    // getQueryResults
+    function getQueryResults(jobId){
+      let request = gapi.client.bigquery.jobs.getQueryResults({
+        'projectId': gcpProjectId,
+        'jobId': jobId
+      });
+      request.execute(response => doHeatMap(response.result.rows))
+    }
+
+    // doHeatMap
+    function doHeatMap(rows){
+      let heatmapData = [];
+      if (heatmap!=null){
+        heatmap.setMap(null);
+      }
+      for (let i = 0; i < rows.length; i++) {
+          let f = rows[i].f;
+          let coords = { lat: parseFloat(f[0].v), lng: parseFloat(f[1].v) };
+          let latLng = new google.maps.LatLng(coords);
+          heatmapData.push(latLng);
+      }
+      heatmap = new google.maps.visualization.HeatmapLayer({
+          data: heatmapData
+      });
+      heatmap.setMap(map);
+    }
+
+    // rectangleQuery
+    function rectangleQuery(latLngBounds){
+      let queryString = rectangleSQL(latLngBounds.getNorthEast(), latLngBounds.getSouthWest());
+      sendQuery(queryString);
+    }
+
+    // rectangleSQL
+    function rectangleSQL(ne, sw){
+      var queryString = 'WITH SHAPE AS (select ST_MAKEPOLYGON(ST_MakeLine(['
+      queryString += 'ST_GEOGPOINT(' + ne.lng() + ',' + ne.lat() +'), '
+      queryString += 'ST_GEOGPOINT(' + sw.lng() + ',' + ne.lat() +'), '
+      queryString += 'ST_GEOGPOINT(' + sw.lng() + ',' + sw.lat() +'), '
+      queryString += 'ST_GEOGPOINT(' + ne.lng() + ',' + sw.lat() +')])) '
+      queryString += 'AS POLY) '
+      queryString += 'SELECT pickup_latitude, pickup_longitude '
+      queryString +=  'FROM `' + bigQueryProjectId +'.' + datasetId + '.' + tableName + '`,SHAPE '
+      queryString += 'WHERE ST_CONTAINS(POLY, ST_GEOGPOINT(pickup_longitude,pickup_latitude)) is TRUE'
+      queryString += ' LIMIT ' + recordLimit;
+      return queryString;
+    }
+
+
+    // circleQuery
+
+
+    // circleSQL
+
+
+
+</script>
+  </head>
+  <body>
+    <div id="map"></div>
+    <!-- Javascript Libraries -->
+    <script src='https://maps.googleapis.com/maps/api/js?libraries=visualization,drawing&key=AIzaSyAd_C6uFm-6M8iVIJSg3AQCNKZSFoYAqAY' async defer></script>
+
+    <!-- BigQuery API -->
+
+    <script src='https://apis.google.com/js/client.js'></script>
+    <!-- Authorize Code -->
+    <script type='text/javascript'>
+    gapi.load('client:auth', authorize);
+    </script>
+
+  </body>
+</html>
